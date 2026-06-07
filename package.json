@@ -1,0 +1,61 @@
+{
+  "name": "apc-mini-mk2-color-controller",
+  "version": "0.1.0",
+  "description": "Desktop color preset editor for Akai APC mini mk2 RGB pad LEDs.",
+  "author": "llcheesell",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/llcheesell/apc-mini-mk2-color-controller.git"
+  },
+  "bugs": {
+    "url": "https://github.com/llcheesell/apc-mini-mk2-color-controller/issues"
+  },
+  "homepage": "https://github.com/llcheesell/apc-mini-mk2-color-controller#readme",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && cross-env ELECTRON_RENDERER_URL=http://127.0.0.1:5173 electron .\"",
+    "build": "tsc --noEmit && vite build",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder"
+  },
+  "build": {
+    "appId": "jp.local.apc-mini-mk2-color-controller",
+    "productName": "APC Color Controller",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.music",
+      "target": [
+        "dir",
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": "nsis"
+    }
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.5.2",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.23",
+    "@types/react-dom": "^18.3.7",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^42.3.3",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "wait-on": "^8.0.3"
+  }
+}
