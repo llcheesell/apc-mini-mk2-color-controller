@@ -274,6 +274,25 @@ export function buildExactRgbSysEx(pairs: Array<{ note: number; color: string; b
   return messages;
 }
 
+// Fast path for the animation/reactive engines: build chunked RGB SysEx directly
+// from raw 0-255 channel values (no behavior lookup / palette math). Each entry is
+// a pad already known to have changed, so callers pass only the diff.
+export function buildRgbSysExForPads(entries: Array<{ note: number; r: number; g: number; b: number }>) {
+  const messages: number[][] = [];
+  for (let index = 0; index < entries.length; index += MAX_PADS_PER_SYSEX) {
+    const slice = entries.slice(index, index + MAX_PADS_PER_SYSEX);
+    const payload = slice.flatMap(({ note, r, g, b }) => {
+      const red = splitToMidi7Bit(r);
+      const green = splitToMidi7Bit(g);
+      const blue = splitToMidi7Bit(b);
+      return [note, note, red.msb, red.lsb, green.msb, green.lsb, blue.msb, blue.lsb];
+    });
+    const length = payload.length;
+    messages.push([0xf0, 0x47, 0x7f, 0x4f, 0x24, (length >> 7) & 0x7f, length & 0x7f, ...payload, 0xf7]);
+  }
+  return messages;
+}
+
 export function messagesForLayout(
   layout: LayoutState,
   options: { preferExactRgb: boolean; sysexEnabled: boolean },
