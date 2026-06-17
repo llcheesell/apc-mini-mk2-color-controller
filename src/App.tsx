@@ -1,6 +1,7 @@
-import { CheckCircle2, Palette, Power, RefreshCw, Send, Sparkles, Usb, XCircle, Zap } from "lucide-react";
+import { CheckCircle2, Palette, Power, Redo2, RefreshCw, Send, Sparkles, Undo2, Usb, XCircle, Zap } from "lucide-react";
 import { type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ANIMATION_BY_ID,
   ANIMATION_DEFAULT_ID,
   animationById,
   createRgbBuffer,
@@ -90,12 +91,14 @@ function luminance(hex: string) {
 export function App() {
   const [mode, setMode] = useState<AppMode>("design");
   const [layout, setLayout] = useState<LayoutState>(() => coerceLoaded(loadStored(LAYOUT_KEY, defaultLayout)));
-  const [gridColors, setGridColors] = useState<GridColorSettings>(() => loadStored(GRID_KEY, defaultGridColors));
-  const [settings, setSettings] = useState<AppSettings>(() => loadStored(SETTINGS_KEY, defaultSettings));
-  const [brush, setBrush] = useState<BrushState>(() => loadStored(BRUSH_KEY, defaultBrush));
+  const [past, setPast] = useState<LayoutState[]>([]);
+  const [future, setFuture] = useState<LayoutState[]>([]);
+  const [gridColors, setGridColors] = useState<GridColorSettings>(() => ({ ...defaultGridColors, ...loadStored(GRID_KEY, defaultGridColors) }));
+  const [settings, setSettings] = useState<AppSettings>(() => ({ ...defaultSettings, ...loadStored(SETTINGS_KEY, defaultSettings) }));
+  const [brush, setBrush] = useState<BrushState>(() => ({ ...defaultBrush, ...loadStored(BRUSH_KEY, defaultBrush) }));
   const [selectedPad, setSelectedPad] = useState(0);
-  const [animation, setAnimation] = useState<AnimationState>(() => loadStored(ANIM_KEY, defaultAnimation));
-  const [reactiveConfig, setReactiveConfig] = useState<ReactiveConfig>(() => loadStored(REACTIVE_KEY, defaultReactive));
+  const [animation, setAnimation] = useState<AnimationState>(() => coerceAnimation(loadStored<unknown>(ANIM_KEY, defaultAnimation)));
+  const [reactiveConfig, setReactiveConfig] = useState<ReactiveConfig>(() => ({ ...defaultReactive, ...loadStored(REACTIVE_KEY, defaultReactive) }));
   const [slots, setSlots] = useState(() => loadSlots());
   const [dragging, setDragging] = useState(false);
   const [lastNote, setLastNote] = useState<{ note: number; velocity: number; pad: number | null } | null>(null);
@@ -119,9 +122,41 @@ export function App() {
   const restartRef = useRef(0); // bumped to restart the animation from t=0
   const drivenRef = useRef(false); // true once a live frame reached the device this session
   const lastNoteRef = useRef<{ note: number; velocity: number; pad: number | null } | null>(null);
+  const pastRef = useRef(past);
+  pastRef.current = past;
+  const futureRef = useRef(future);
+  futureRef.current = future;
+  const slotsRef = useRef(slots);
+  slotsRef.current = slots;
 
   const live = mode !== "design";
   const selectedOutput = midi.selectedOutput;
+
+  // ---- undo / redo of the layout document ----
+  const pushHistory = useCallback(() => {
+    setPast((p) => [...p, layoutRef.current].slice(-100));
+    setFuture([]);
+  }, []);
+  const undo = useCallback(() => {
+    const p = pastRef.current;
+    if (p.length === 0) {
+      return;
+    }
+    setPast(p.slice(0, -1));
+    setFuture((f) => [layoutRef.current, ...f].slice(0, 100));
+    setLayout(p[p.length - 1]);
+  }, []);
+  const redo = useCallback(() => {
+    const f = futureRef.current;
+    if (f.length === 0) {
+      return;
+    }
+    setFuture(f.slice(1));
+    setPast((p) => [...p, layoutRef.current].slice(-100));
+    setLayout(f[0]);
+  }, []);
+  const canUndo = past.length > 0;
+  const canRedo = future.length > 0;
 
   // ---- persistence ----
   useEffect(() => storeValue(LAYOUT_KEY, layout), [layout]);
@@ -150,9 +185,23 @@ export function App() {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
-        return;
+        return; // let text fields use native editing/undo
       }
       const key = event.key.toLowerCase();
+      if ((event.metaKey || event.ctrlKey) && key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          redo();
+        } else {
+          undo();
+        }
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && key === "y") {
+        event.preventDefault();
+        redo();
+        return;
+      }
       if (key === "b") {
         setBrush((current) => ({ ...current, tool: "brush" }));
       } else if (key === "i") {
@@ -163,7 +212,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mode]);
+  }, [mode, undo, redo]);
 
   // ---- MIDI note input (reactive mode) ----
   const { activeInputs } = useMidiInput({
@@ -200,6 +249,18 @@ export function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live, mode, animation.armed, reactiveConfig.armed, midi.selectedOutputId]);
+
+  // ---- Design mode: push edits to the device in real time (debounced) ----
+  useEffect(() => {
+    if (mode !== "design" || !selectedOutput) {
+      return;
+    }
+    const id = window.setTimeout(() => {
+      midi.sendLayout(layoutRef.current, { closeAfter: false, quiet: true });
+    }, 60);
+    return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, layout, gridColors, selectedOutput]);
 
   // ---- the single rAF live engine, owned by live mode ----
   useEffect(() => {
@@ -257,7 +318,7 @@ export function App() {
           intensity: anim.intensity,
           primary: anim.primary,
           secondary: anim.secondary,
-          params: anim.extras[anim.modeId] ?? {},
+          params: anim.extras?.[anim.modeId] ?? {},
           state: animState,
         });
       } else {
@@ -327,10 +388,13 @@ export function App() {
       if (target.hasPointerCapture?.(event.pointerId)) {
         target.releasePointerCapture(event.pointerId);
       }
+      if (brush.tool !== "eyedropper") {
+        pushHistory(); // one undo entry per stroke (snapshot before the stroke starts)
+      }
       setDragging(true);
       applyTool(note);
     },
-    [applyTool],
+    [applyTool, brush.tool, pushHistory],
   );
 
   const onPadEnter = useCallback(
@@ -342,7 +406,15 @@ export function App() {
     [applyTool, brush.tool, dragging],
   );
 
-  const onPadActivate = useCallback((note: number) => applyTool(note), [applyTool]);
+  const onPadActivate = useCallback(
+    (note: number) => {
+      if (brush.tool !== "eyedropper") {
+        pushHistory();
+      }
+      applyTool(note);
+    },
+    [applyTool, brush.tool, pushHistory],
+  );
 
   const onBrushColor = useCallback(
     (raw: string) => {
@@ -391,6 +463,7 @@ export function App() {
 
   const onFill = useCallback(
     (kind: "row" | "col" | "all") => {
+      pushHistory();
       const position = padViewPosition(selectedPad);
       const color = brush.color;
       const behaviorId = brush.behaviorId;
@@ -402,11 +475,12 @@ export function App() {
         fillPads((note) => padViewPosition(note).column === position.column, color, behaviorId);
       }
     },
-    [brush.behaviorId, brush.color, fillPads, selectedPad],
+    [brush.behaviorId, brush.color, fillPads, pushHistory, selectedPad],
   );
 
   const onAxisFill = useCallback(
     (kind: AxisFillKind, index: number, erase: boolean) => {
+      pushHistory();
       const color = erase ? "#000000" : brush.color;
       const behaviorId: BehaviorId = erase ? "solid-100" : brush.behaviorId;
       if (kind === "all") {
@@ -417,12 +491,13 @@ export function App() {
         fillPads((note) => padViewPosition(note).column === index, color, behaviorId);
       }
     },
-    [brush.behaviorId, brush.color, fillPads],
+    [brush.behaviorId, brush.color, fillPads, pushHistory],
   );
 
   const onClearPad = useCallback(() => {
+    pushHistory();
     paintPad(selectedPad, "#000000", "solid-100");
-  }, [paintPad, selectedPad]);
+  }, [paintPad, pushHistory, selectedPad]);
 
   const onAxisColor = useCallback(
     (axis: "rows" | "columns", index: number, raw: string) => {
@@ -444,6 +519,7 @@ export function App() {
   );
 
   const onAxisGenerate = useCallback((axis: "rows" | "columns", colors: string[]) => {
+    pushHistory();
     setGridColors((current) => ({ ...current, [axis]: colors.map(normalizeHex) }));
     setLayout((current) => ({
       ...current,
@@ -453,38 +529,41 @@ export function App() {
         return { ...pad, color: normalizeHex(colors[index] ?? pad.color) };
       }),
     }));
-  }, []);
+  }, [pushHistory]);
 
   const onApplyPreset = useCallback((id: string) => {
     const preset = PRESETS.find((candidate) => candidate.id === id);
     if (!preset) {
       return;
     }
+    pushHistory();
     const next = cloneLayout(preset);
     setLayout(next);
     setSelectedPad(0);
     setBrush((current) => ({ ...current, color: next.pads[0].color, behaviorId: next.pads[0].behaviorId }));
     midi.setStatus({ level: "ok", text: `${preset.name} 適用` });
-  }, [midi]);
+  }, [midi, pushHistory]);
 
   // ---- slots ----
   const onSaveSlot = useCallback(() => {
     setSlots((current) => addSlot(current, `Preset ${current.length + 1}`, cloneLayout(layout), { ...gridColors }));
   }, [gridColors, layout]);
 
-  const onLoadSlot = useCallback((id: string) => {
-    setSlots((current) => {
-      const slot = current.find((s) => s.id === id);
-      if (slot) {
-        setLayout(cloneLayout(slot.layout));
-        if (slot.gridColors) {
-          setGridColors({ ...slot.gridColors });
-        }
-        setSelectedPad(0);
+  const onLoadSlot = useCallback(
+    (id: string) => {
+      const slot = slotsRef.current.find((s) => s.id === id);
+      if (!slot) {
+        return;
       }
-      return current;
-    });
-  }, []);
+      pushHistory();
+      setLayout(cloneLayout(slot.layout));
+      if (slot.gridColors) {
+        setGridColors({ ...slot.gridColors });
+      }
+      setSelectedPad(0);
+    },
+    [pushHistory],
+  );
 
   const onDeleteSlot = useCallback((id: string) => setSlots((current) => removeSlot(current, id)), []);
   const onRenameSlot = useCallback(
@@ -518,6 +597,7 @@ export function App() {
         midi.setStatus({ level: "error", text: "JSON形式エラー" });
         return;
       }
+      pushHistory();
       setLayout(imported);
       if (parsed.gridColors) {
         setGridColors(parsed.gridColors);
@@ -531,21 +611,23 @@ export function App() {
         fileInputRef.current.value = "";
       }
     }
-  }, [midi]);
+  }, [midi, pushHistory]);
 
   // ---- single LED buttons ----
   const onTrackClick = useCallback((index: number) => {
+    pushHistory();
     setLayout((current) => ({
       ...current,
       trackButtons: current.trackButtons.map((b, i) => (i === index ? { ...b, mode: nextLed(b.mode) } : b)),
     }));
-  }, []);
+  }, [pushHistory]);
   const onSceneClick = useCallback((index: number) => {
+    pushHistory();
     setLayout((current) => ({
       ...current,
       sceneButtons: current.sceneButtons.map((b, i) => (i === index ? { ...b, mode: nextLed(b.mode) } : b)),
     }));
-  }, []);
+  }, [pushHistory]);
 
   // ---- send (design) ----
   const sendCurrent = useCallback(
@@ -639,6 +721,12 @@ export function App() {
           </IconButton>
           {mode === "design" && (
             <>
+              <IconButton title="元に戻す (⌘Z)" onClick={undo} disabled={!canUndo}>
+                <Undo2 size={16} />
+              </IconButton>
+              <IconButton title="やり直す (⌘⇧Z)" onClick={redo} disabled={!canRedo}>
+                <Redo2 size={16} />
+              </IconButton>
               <button className="sendButton" onClick={() => sendCurrent(false)} disabled={!selectedOutput}>
                 <Send size={16} />
                 <span>送信</span>
@@ -793,4 +881,23 @@ function coerceLayout(value: unknown): LayoutState | null {
 
 function coerceLoaded(value: LayoutState): LayoutState {
   return coerceLayout(value) ?? cloneLayout(defaultLayout);
+}
+
+// Migrate a persisted animation value to the current AnimationState shape. Older
+// app versions stored a different object (no extras/primary/secondary), which
+// would crash the render loop — so validate every field and fall back.
+function coerceAnimation(value: unknown): AnimationState {
+  const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const modeId = typeof raw.modeId === "string" && ANIMATION_BY_ID.has(raw.modeId) ? raw.modeId : ANIMATION_DEFAULT_ID;
+  const isHex = (v: unknown): v is string => typeof v === "string" && /^#[0-9A-Fa-f]{6}$/.test(v);
+  return {
+    modeId,
+    speed: typeof raw.speed === "number" ? raw.speed : defaultAnimation.speed,
+    intensity: typeof raw.intensity === "number" ? raw.intensity : defaultAnimation.intensity,
+    primary: isHex(raw.primary) ? (raw.primary as string).toUpperCase() : defaultAnimation.primary,
+    secondary: isHex(raw.secondary) ? (raw.secondary as string).toUpperCase() : defaultAnimation.secondary,
+    extras: raw.extras && typeof raw.extras === "object" ? (raw.extras as AnimationState["extras"]) : {},
+    playing: typeof raw.playing === "boolean" ? raw.playing : true,
+    armed: false, // never auto-arm on load
+  };
 }
