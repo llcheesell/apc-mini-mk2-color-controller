@@ -1,7 +1,7 @@
 {
   "name": "apc-mini-mk2-color-controller",
-  "version": "0.1.0",
-  "description": "Desktop color preset editor for Akai APC mini mk2 RGB pad LEDs.",
+  "version": "0.2.0",
+  "description": "Desktop color & animation studio for Akai APC mini mk2 RGB pad LEDs.",
   "author": "llcheesell",
   "repository": {
     "type": "git",
@@ -16,7 +16,8 @@
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && cross-env ELECTRON_RENDERER_URL=http://127.0.0.1:5173 electron .\"",
     "build": "tsc --noEmit && vite build",
     "start": "npm run build && electron .",
-    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder"
+    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
+    "shot": "npm run build && electron scripts/screenshot.cjs"
   },
   "build": {
     "appId": "jp.local.apc-mini-mk2-color-controller",
