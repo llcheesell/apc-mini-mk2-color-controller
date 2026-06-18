@@ -246,7 +246,12 @@ export function buildSingleLedMessage(note: number, mode: SingleLedMode) {
   return [0x90, note, velocity];
 }
 
-export function buildExactRgbSysEx(pairs: Array<{ note: number; color: string; behaviorId: BehaviorId }>) {
+// The APC mini mk2 silently truncates a single SysEx after ~256 data bytes
+// (32 pads of 8 bytes each), so a 64-pad message only lights the first half.
+// Cap each RGB SysEx well under that limit so every pad updates.
+export const MAX_PADS_PER_SYSEX = 8;
+
+function buildRgbSysExChunk(pairs: Array<{ note: number; color: string; behaviorId: BehaviorId }>) {
   const payload = pairs.flatMap(({ note, color, behaviorId }) => {
     const behavior = behaviorById(behaviorId);
     const rgb = scaleRgb(hexToRgb(color), behavior.brightness);
@@ -259,6 +264,33 @@ export function buildExactRgbSysEx(pairs: Array<{ note: number; color: string; b
 
   const length = payload.length;
   return [0xf0, 0x47, 0x7f, 0x4f, 0x24, (length >> 7) & 0x7f, length & 0x7f, ...payload, 0xf7];
+}
+
+export function buildExactRgbSysEx(pairs: Array<{ note: number; color: string; behaviorId: BehaviorId }>) {
+  const messages: number[][] = [];
+  for (let index = 0; index < pairs.length; index += MAX_PADS_PER_SYSEX) {
+    messages.push(buildRgbSysExChunk(pairs.slice(index, index + MAX_PADS_PER_SYSEX)));
+  }
+  return messages;
+}
+
+// Fast path for the animation/reactive engines: build chunked RGB SysEx directly
+// from raw 0-255 channel values (no behavior lookup / palette math). Each entry is
+// a pad already known to have changed, so callers pass only the diff.
+export function buildRgbSysExForPads(entries: Array<{ note: number; r: number; g: number; b: number }>) {
+  const messages: number[][] = [];
+  for (let index = 0; index < entries.length; index += MAX_PADS_PER_SYSEX) {
+    const slice = entries.slice(index, index + MAX_PADS_PER_SYSEX);
+    const payload = slice.flatMap(({ note, r, g, b }) => {
+      const red = splitToMidi7Bit(r);
+      const green = splitToMidi7Bit(g);
+      const blue = splitToMidi7Bit(b);
+      return [note, note, red.msb, red.lsb, green.msb, green.lsb, blue.msb, blue.lsb];
+    });
+    const length = payload.length;
+    messages.push([0xf0, 0x47, 0x7f, 0x4f, 0x24, (length >> 7) & 0x7f, length & 0x7f, ...payload, 0xf7]);
+  }
+  return messages;
 }
 
 export function messagesForLayout(
@@ -286,7 +318,7 @@ export function messagesForLayout(
   });
 
   if (exactRgbPairs.length > 0) {
-    messages.unshift(buildExactRgbSysEx(exactRgbPairs));
+    messages.unshift(...buildExactRgbSysEx(exactRgbPairs));
   }
 
   layout.trackButtons.forEach((button, index) => {
